@@ -1,0 +1,563 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>منظومة إدارة الفعاليات والدعوات الكنسية الشاملة</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts (Cairo) -->
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800;900&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- QRCode.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- HTML5 QRCode Scanner -->
+    <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <!-- Canvas Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <!-- Per-page PDF rendering: rasterize each invitation independently to prevent blank or merged pages. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        navy: { 900: '#0B132B', 800: '#1C2541', 700: '#2A3A5E' },
+                        gold: { 400: '#FFE066', 500: '#F7B801', 600: '#D4AF37' },
+                        crimson: { 600: '#E63946', 700: '#C5221F' }
+                    },
+                    fontFamily: { cairo: ['Cairo', 'sans-serif'] }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body { font-family: 'Cairo', sans-serif; background-color: #0B132B; color: #F8FAFC; }
+        .glass-card { background: rgba(28, 37, 65, 0.88); backdrop-filter: blur(12px); border: 1px solid rgba(212, 175, 55, 0.25); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+
+        /* PDF renderers stay in the DOM; they move into the canvas during export. */
+        #pdf-render-wrapper, #bulk-pdf-render-wrapper, #report-pdf-render-wrapper {
+            position: fixed; top: 0; left: -12000px; width: 210mm; pointer-events: none;
+            z-index: -1; visibility: visible; background: #ffffff;
+        }
+        body.pdf-exporting #pdf-render-wrapper, body.pdf-exporting #bulk-pdf-render-wrapper,
+        body.pdf-exporting #report-pdf-render-wrapper {
+            left: 0; top: 0; z-index: 10001; visibility: visible;
+        }
+        #pdfTemplateCard {
+            width: 210mm; min-height: 297mm; padding: 15mm; box-sizing: border-box;
+            font-family: 'Cairo', sans-serif; direction: rtl; display: flex; flex-direction: column;
+            justify-content: space-between; position: relative; overflow: hidden; border-radius: 12px;
+        }
+        .bulk-ticket-page {
+            width: 210mm; height: 297mm; padding: 14mm; box-sizing: border-box; display: flex;
+            flex-direction: column; justify-content: space-between; align-items: stretch; gap: 4mm;
+            font-family: Cairo, sans-serif; direction: rtl; overflow: hidden; position: relative;
+            page-break-after: always; break-after: page; border-radius: 12px;
+        }
+        .bulk-ticket-page:last-child { page-break-after: auto; break-after: auto; }
+        .invitation-card { isolation: isolate; position: relative; overflow: hidden; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+        .invitation-card::before {
+            content: '✦  ✧  ✦'; position: absolute; top: 7mm; left: 0; right: 0; z-index: 0;
+            text-align: center; font-size: 15pt; letter-spacing: 8px; color: rgba(247,184,1,.9);
+        }
+        .invitation-card::after {
+            content: ''; position: absolute; inset: 4mm; z-index: 0; border: 1px solid rgba(247,184,1,.45);
+            border-radius: 9px; pointer-events: none;
+        }
+        #ticketCard > *, #pdfTemplateCard > *, .bulk-ticket-page > * { position: relative; z-index: 1; }
+        .invitation-motto, .bulk-ticket-motto { text-align: center; color: #FFE066; font-weight: 900; letter-spacing: 2px; }
+        .invitation-motto { font-size: 10px; margin: 7px 0 0; }
+        .bulk-ticket-header { display: flex; align-items: center; justify-content: space-between; gap: 8mm; border-bottom: 2px solid rgba(212,175,55,.65); padding-bottom: 8mm; }
+        .bulk-ticket-header img { width: 25mm; height: 25mm; object-fit: contain; border-radius: 50%; border: 2px solid #D4AF37; background: #fff; }
+        .bulk-ticket-heading { text-align: center; flex: 1; }
+        .bulk-ticket-heading h1 { font-size: 22pt; line-height: 1.35; font-weight: 900; margin: 3mm 0 0; }
+        .bulk-ticket-label { display: inline-block; background: #D4AF37; color: #0B132B; font-weight: 900; border-radius: 20px; padding: 2mm 8mm; font-size: 12pt; }
+        .bulk-ticket-motif { text-align: center; color: #FFE066; font-size: 17pt; letter-spacing: 6px; }
+        .bulk-church-name { text-align: center; font-size: 14pt; font-weight: 700; margin: 0; }
+        .bulk-invitation-text { text-align: center; font-size: 15pt; margin: 0; }
+        .bulk-ticket-name { text-align: center; font-weight: 900; font-size: 32pt; line-height: 1.35; margin: 0; overflow-wrap: anywhere; }
+        .bulk-ticket-stage { text-align: center; font-size: 17pt; font-weight: 700; margin: 0; }
+        .bulk-ticket-verse { text-align: center; border: 1px solid rgba(212,175,55,.4); background: rgba(0,0,0,.16); border-radius: 12px; padding: 5mm 8mm; font-size: 15pt; font-style: italic; margin: 0; }
+        .bulk-ticket-qr { align-self: center; background: #fff; border: 2px solid #D4AF37; border-radius: 6mm; padding: 5mm; }
+        .bulk-ticket-code { text-align: center; font: 800 16pt monospace; margin: 0; direction: ltr; }
+        .bulk-ticket-motto { font-size: 12pt; margin: 0; }
+        .bulk-ticket-footer { display: flex; justify-content: space-between; gap: 8mm; border-top: 1px solid rgba(255,255,255,.4); padding-top: 5mm; font-size: 12pt; }
+        #pdf-export-overlay { position: fixed; inset: 0; z-index: 10002; display: flex; align-items: center; justify-content: center; background: rgba(5,10,22,.92); color: #fff; }
+        #pdf-export-overlay.hidden { display: none; }
+        .event-report-page { width: 210mm; min-height: 297mm; padding: 14mm; box-sizing: border-box; direction: rtl; font: 12pt Cairo, sans-serif; color: #0B132B; background: #fff; }
+        .event-report-page header { text-align: center; border-bottom: 2px solid #D4AF37; padding-bottom: 8mm; margin-bottom: 8mm; }
+        .event-report-page h1 { font-size: 18pt; margin: 0; }
+        .event-report-page h2 { color: #C5221F; font-size: 16pt; }
+        .event-report-page table { border-collapse: collapse; width: 100%; }
+        .event-report-page th, .event-report-page td { border: 1px solid #CBD5E1; padding: 2mm; text-align: right; }
+        .event-report-page th { background: #F1F5F9; }
+        #editEventModal { background: rgba(2,6,23,.84); backdrop-filter: blur(8px); }
+        @media print {
+            @page { size: A4 portrait; margin: 0; }
+            html, body { width: 210mm; min-height: 297mm; margin: 0 !important; padding: 0 !important; background: #fff !important; display: block !important; }
+            body * { visibility: hidden !important; }
+            #ticketCard, #ticketCard * { visibility: visible !important; }
+            #ticketCard {
+                position: fixed !important; inset: 0 auto auto 0 !important; width: 210mm !important;
+                max-width: none !important; min-height: 297mm !important; height: 297mm !important;
+                margin: 0 !important; border-radius: 0 !important; box-shadow: none !important;
+                print-color-adjust: exact !important; -webkit-print-color-adjust: exact !important;
+            }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+        .auth-backdrop { background:rgba(2,6,23,.82); backdrop-filter:blur(8px); }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between">
+
+    <!-- Header Navigation -->
+    <header class="glass-card sticky top-0 z-40 border-b border-gold-600/30 px-4 py-3">
+        <div class="max-w-7xl mx-auto flex flex-wrap justify-between items-center gap-4">
+
+            <div class="flex items-center gap-3">
+                <div class="flex gap-2">
+                    <img id="churchLogo" src="https://placehold.co/120x120/1C2541/D4AF37?text=لوجو+الكنيسة"
+                         title="لوجو الكنيسة" class="w-12 h-12 rounded-full border-2 border-gold-500 object-cover shadow-md">
+                    <img id="eventLogo" src="https://placehold.co/120x120/1C2541/FFE066?text=لوجو+الفعالية"
+                         title="لوجو الفعالية" class="w-12 h-12 rounded-full border-2 border-gold-400 object-cover shadow-md">
+                </div>
+
+                <div>
+                    <h1 id="headerChurchTitle" class="text-base md:text-lg font-black text-gold-400">كنيسة الأنبا شنودة رئيس المتوحدين</h1>
+                    <p id="headerEventSub" class="text-xs text-slate-300 font-bold">الفعالية النشطة: <span id="currentActiveEventBadge" class="text-gold-400 underline">اليوم الروحي للخدام</span></p>
+                </div>
+            </div>
+
+            <!-- Navigation Buttons -->
+            <div class="flex items-center gap-2 bg-navy-900/90 p-1.5 rounded-xl border border-navy-700 flex-wrap">
+                <button onclick="switchTab('register')" id="tab-register" class="px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 bg-gold-500 text-navy-900">
+                    <i class="fa-solid fa-ticket"></i> <span>إصدار الدعوات</span>
+                </button>
+                <button onclick="switchTab('batch')" id="tab-batch" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-layer-group"></i> <span>حجز متعدد</span>
+                </button>
+                <button onclick="switchTab('scan')" id="tab-scan" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-qrcode text-emerald-400"></i> <span>مسح الحضور</span>
+                </button>
+                <button onclick="switchTab('bookings')" id="tab-bookings" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-users text-sky-300"></i> <span>الحجوزات والأسماء</span>
+                </button>
+                <button onclick="switchTab('events')" id="tab-events" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-calendar-days text-gold-400"></i> <span>إدارة الفعاليات</span>
+                </button>
+                <button onclick="switchTab('admins')" id="tab-admins" class="px-3 py-1.5 rounded-lg text-xs font-bold text-slate-300 hover:text-white transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-user-shield text-sky-400"></i> <span>المشرفون</span>
+                </button>
+                <button onclick="handleAuthAction()" id="authBtn" class="px-3 py-1.5 rounded-lg text-xs font-bold bg-crimson-600 text-white hover:bg-crimson-700 transition flex items-center gap-1">
+                    <i class="fa-solid fa-lock"></i> <span id="authBtnText">دخول الأدمن</span>
+                </button>
+            </div>
+
+        </div>
+    </header>
+
+
+    <div id="loginModal" class="hidden fixed inset-0 z-[100] auth-backdrop flex items-center justify-center p-4">
+        <div class="w-full max-w-md rounded-3xl border border-gold-500/40 bg-slate-950 shadow-2xl overflow-hidden">
+            <div class="p-6 bg-gradient-to-l from-slate-900 to-indigo-950 border-b border-gold-500/20">
+                <div class="flex items-center gap-3"><div class="w-12 h-12 rounded-2xl bg-gold-500 text-slate-950 flex items-center justify-center text-xl"><i class="fa-solid fa-shield-halved"></i></div><div><h2 class="text-xl font-black text-white">بوابة المشرفين</h2><p class="text-xs text-slate-300 mt-1">سجّل الدخول لإدارة الفعاليات والحضور</p></div></div>
+            </div>
+            <form id="loginForm" onsubmit="submitLogin(event)" class="p-6 space-y-4">
+                <div><label for="loginUsername" class="block text-xs font-bold text-slate-300 mb-2">اسم المستخدم</label><div class="relative"><i class="fa-solid fa-user absolute right-3 top-3 text-gold-400"></i><input id="loginUsername" autocomplete="username" required class="w-full rounded-xl bg-slate-900 border border-slate-700 focus:border-gold-500 outline-none text-white text-sm pr-10 pl-3 py-3" placeholder="اسم المستخدم"></div></div>
+                <div><label for="loginPassword" class="block text-xs font-bold text-slate-300 mb-2">كلمة المرور</label><div class="relative"><i class="fa-solid fa-key absolute right-3 top-3 text-gold-400"></i><input id="loginPassword" type="password" autocomplete="current-password" required class="w-full rounded-xl bg-slate-900 border border-slate-700 focus:border-gold-500 outline-none text-white text-sm pr-10 pl-3 py-3" placeholder="كلمة المرور"></div></div>
+                <p id="loginError" class="hidden text-xs text-rose-300 bg-rose-950/60 border border-rose-800 rounded-lg p-3">بيانات الدخول غير صحيحة، حاول مرة أخرى.</p>
+                <button type="submit" class="w-full rounded-xl bg-gradient-to-l from-amber-400 to-yellow-600 text-slate-950 font-black py-3 shadow-lg hover:brightness-110 transition"><i class="fa-solid fa-right-to-bracket ml-2"></i>تسجيل الدخول</button>
+                <button type="button" onclick="closeLoginModal()" class="w-full rounded-xl border border-slate-700 text-slate-300 py-2 text-sm hover:bg-slate-900">إلغاء</button>
+                <p class="text-[10px] text-slate-500 leading-5">بيانات الدخول الافتراضية لأول مرة: admin / 123456. يُنصح بتغيير كلمة المرور بعد أول دخول.</p>
+            </form>
+        </div>
+    </div>
+
+    <div id="appError" class="hidden mx-auto mt-4 max-w-3xl rounded-xl border border-rose-700 bg-rose-950/90 p-4 text-sm text-rose-100"></div>
+
+    <div id="editEventModal" class="hidden fixed inset-0 z-[90] flex items-center justify-center p-4">
+        <div class="w-full max-w-2xl rounded-3xl border border-gold-500/40 bg-slate-950 p-6 shadow-2xl">
+            <div class="flex items-center justify-between border-b border-slate-800 pb-3 mb-4">
+                <div><h2 class="text-lg font-black text-gold-300">تعديل بيانات الفعالية</h2><p class="text-xs text-slate-400">عدّل الاسم والآية والتاريخ والموعد والثيمات.</p></div>
+                <button type="button" onclick="closeEditEvent()" class="text-slate-300 hover:text-white text-xl" aria-label="إغلاق">×</button>
+            </div>
+            <form onsubmit="saveEventEdit(event)" class="space-y-3">
+                <input type="text" id="editEventTitle" required placeholder="عنوان الفعالية" class="w-full bg-navy-900 border border-navy-700 text-white text-sm rounded-xl px-3 py-2.5">
+                <input type="text" id="editEventVerse" placeholder="الآية الكنسية للفعالية" class="w-full bg-navy-900 border border-navy-700 text-white text-sm rounded-xl px-3 py-2.5">
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <input type="date" id="editEventDate" required class="bg-navy-900 border border-navy-700 text-white text-sm rounded-xl px-3 py-2.5">
+                    <input type="text" id="editEventTime" placeholder="موعد الفعالية" class="bg-navy-900 border border-navy-700 text-white text-sm rounded-xl px-3 py-2.5">
+                </div>
+                <div class="bg-navy-900/70 border border-navy-700 rounded-xl p-3"><label class="block text-xs font-bold text-gold-400 mb-2">الثيمات المتاحة:</label><div id="editEventThemes" class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs"></div></div>
+                <div class="flex justify-end gap-2 pt-2"><button type="button" onclick="closeEditEvent()" class="rounded-xl border border-slate-700 px-4 py-2 text-sm text-slate-300">إلغاء</button><button type="submit" class="rounded-xl bg-gold-500 px-5 py-2 text-sm font-black text-navy-900">حفظ التعديلات</button></div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Main Body Container -->
+    <main class="max-w-7xl mx-auto w-full p-4 md:p-6 flex-1">
+
+        <!-- TAB 1: SINGLE TICKET REGISTRATION -->
+        <section id="section-register" class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+            <div class="lg:col-span-5 glass-card p-6 rounded-2xl border border-gold-600/30 space-y-4">
+                <div class="flex items-center justify-between border-b border-navy-700 pb-3">
+                    <h2 class="text-base font-bold text-gold-400 flex items-center gap-2">
+                        <i class="fa-solid fa-user-plus text-crimson-600"></i> <span>إصدار دعوة فردية</span>
+                    </h2>
+                    <span class="text-xs bg-navy-900 text-gold-400 px-2.5 py-1 rounded-full border border-gold-500/30 font-bold">VIP Pass</span>
+                </div>
+
+                <form id="registrationForm" onsubmit="generateTicket(event)" class="space-y-4">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-1">اسم الخادم / المشارك *</label>
+                        <input type="text" id="servantName" required placeholder="أدخل الاسم كاملاً" class="w-full bg-navy-900 border border-navy-700 text-white rounded-xl px-3 py-2.5 text-xs focus:border-gold-500 focus:outline-none">
+                    </div>
+
+                    <div class="grid grid-cols-2 gap-3">
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">القطاع / الخدمة</label>
+                            <input type="text" id="servantStage" placeholder="مثال: خدمة ابتدائي" class="w-full bg-navy-900 border border-navy-700 text-white rounded-xl px-3 py-2.5 text-xs focus:border-gold-500 focus:outline-none">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-bold text-slate-300 mb-1">رقم الموبايل</label>
+                            <input type="tel" id="servantPhone" placeholder="01xxxxxxxxx" class="w-full bg-navy-900 border border-navy-700 text-white rounded-xl px-3 py-2.5 text-xs focus:border-gold-500 focus:outline-none">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-xs font-bold text-gold-400 mb-1">اختيار قالب تصميم التذكرة:</label>
+                        <select id="themeSelector" onchange="changeTheme(this.value)" class="w-full bg-navy-900 border border-gold-500/50 text-gold-300 font-bold rounded-xl px-3 py-2.5 text-xs focus:outline-none">
+                            <option value="theme-navy-gold">🔵 الملكي الأزرق والذهبي</option>
+                            <option value="theme-burgundy-gold">🍷 العنابي والذهبي</option>
+                            <option value="theme-emerald-gold">🟢 الزمردي الملكي</option>
+                            <option value="theme-wood-parchment">🪵 الخشبي الروحي</option>
+                            <option value="theme-clean-white">⚪ الأبيض الاقتصادي</option>
+                            <option value="theme-neon-dark">🌑 الداكن الحديث</option>
+                            <option value="theme-royal-purple">🟣 البنفسجي الملكي</option>
+                            <option value="theme-ocean-blue">🌊 الأزرق البحري</option>
+                            <option value="theme-rose-gold">🌹 الوردي والذهبي</option>
+                            <option value="theme-ivory-green">🌿 العاجي والأخضر</option>
+                            <option value="theme-silver-black">⚫ الأسود والفضي</option>
+                            <option value="theme-sky-white">☁️ السماوي والأبيض</option>
+                            <option value="theme-sunset">🌅 الغروب</option>
+                            <option value="theme-lavender">💜 اللافندر</option>
+                            <option value="theme-christmas">🎄 الأخضر الاحتفالي</option>
+                            <option value="theme-minimal-gold">✨ الذهبي البسيط</option>
+                        </select>
+                    </div>
+
+                    <button type="submit" class="w-full bg-gradient-to-r from-gold-500 to-gold-600 hover:from-gold-400 hover:to-gold-500 text-navy-900 font-black py-3 rounded-xl shadow-lg transition text-xs flex items-center justify-center gap-2">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> <span>توليد وتخصيص الدعوة</span>
+                    </button>
+                </form>
+
+                <div class="pt-4 border-t border-navy-700 flex justify-between items-center">
+                    <span class="text-xs text-slate-300 font-bold">إجمالي الدعوات المحجوزة: <strong id="registeredCount" class="text-gold-400 font-mono">0</strong></span>
+                    <button onclick="exportAllTicketsBulkPDF()" class="bg-navy-800 hover:bg-navy-700 border border-gold-500/40 text-gold-400 text-xs font-bold px-3 py-2 rounded-xl transition flex items-center gap-1">
+                        <i class="fa-solid fa-file-pdf"></i> <span>تصدير كافة الدعوات (PDF واحد)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Single Ticket Preview Screen -->
+            <div class="lg:col-span-7 flex flex-col items-center">
+                <div class="w-full flex justify-between items-center mb-3 flex-wrap gap-2">
+                    <span class="text-xs font-bold text-slate-300"><i class="fa-solid fa-eye text-gold-500"></i> معاينة التذكرة المباشرة</span>
+                    <div id="actionButtons" class="hidden flex gap-2">
+                        <button onclick="downloadPDF()" class="bg-crimson-600 hover:bg-crimson-700 text-white font-black text-xs px-4 py-2 rounded-xl transition shadow flex items-center gap-1.5">
+                            <i class="fa-solid fa-file-pdf"></i> <span>تحميل PDF (صفحة A4)</span>
+                        </button>
+                        <button onclick="printSingleTicket()" class="bg-navy-800 hover:bg-navy-700 text-gold-400 font-bold text-xs px-3 py-2 rounded-xl border border-gold-500/40">
+                            <i class="fa-solid fa-print"></i> <span>طباعة</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Preview Container -->
+                <div id="ticketCard" class="w-full max-w-md theme-navy-gold rounded-2xl p-6 relative shadow-2xl transition-all invitation-card">
+                    <div class="flex justify-between items-center border-b border-gold-500/30 pb-3 mb-3">
+                        <div class="flex items-center gap-2">
+                            <img id="previewChurchLogo" src="https://placehold.co/120x120/1C2541/D4AF37?text=لوجو+الكنيسة" class="w-12 h-12 rounded-full border border-gold-400 object-cover">
+                            <img id="previewEventLogo" src="https://placehold.co/120x120/1C2541/FFE066?text=لوجو+الفعالية" class="w-12 h-12 rounded-full border border-gold-400 object-cover">
+                        </div>
+                        <div class="text-left">
+                            <span class="text-[10px] bg-gold-500 text-navy-900 font-black px-2 py-0.5 rounded">دعوة حضور رسمية</span>
+                        </div>
+                    </div>
+
+                    <div class="text-center my-2">
+                        <h2 id="previewChurchName" class="text-xs font-bold opacity-90">كنيسة الأنبا شنودة رئيس المتوحدين</h2>
+                        <h1 id="previewEventTitle" class="text-xl font-black text-gold-400 my-1 tracking-wide underline decoration-gold-500">اليوم الروحي للخدام</h1>
+                    </div>
+
+                    <div class="bg-black/30 rounded-xl p-3 border border-gold-500/20 my-3 flex justify-between items-center gap-3">
+                        <div>
+                            <p class="text-[10px] opacity-75 font-bold">اسم الخادم / المشارك:</p>
+                            <h3 id="previewServantName" class="font-black text-base text-gold-300">اسم الخادم هنا</h3>
+                            <p id="previewServantStage" class="text-xs font-semibold opacity-90">الخدمة</p>
+                            <p class="text-[10px] font-mono mt-1 opacity-75">الكود: <span id="previewTicketCode" class="font-bold text-gold-400">#SERV-1000</span></p>
+                        </div>
+                        <div class="bg-white p-1.5 rounded-lg border border-gold-500 shrink-0 text-center">
+                            <div id="qrcode" class="w-20 h-20 flex items-center justify-center"></div>
+                        </div>
+                    </div>
+
+                    <div class="text-center bg-black/20 rounded-lg p-2 border border-white/10 my-2">
+                        <p id="previewBibleVerse" class="text-xs italic font-semibold">"تَعَالَوْا أَنْتُمْ مُنْفَرِدِينَ إِلَى مَوْضِعٍ خَلاَءٍ وَاسْتَرِيحُوا قَلِيلاً"</p>
+                    </div>
+
+                    <p class="invitation-motto">✧ محبة • صلاة • شركة • رجاء ✧</p>
+                    <div id="previewRewardBox" class="bg-crimson-600/90 text-white rounded-lg p-2.5 text-xs">
+                        <p class="font-black text-gold-300">🎁 مفاجأة الحضور المبكر:</p>
+                        <p id="previewRewardText" class="text-[11px]">هدية فورية واستلام متميز لأول 40 خادم يصلون قبل الموعد.</p>
+                    </div>
+
+                    <div class="mt-3 pt-2 border-t border-white/20 flex justify-between items-center text-[10px] opacity-80">
+                        <span id="previewEventDate">📅 السبت 14 / 11 / 2026</span>
+                        <span id="previewEventTime">⏰ 7:00 صباحاً</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 2: BATCH BOOKING -->
+        <section id="section-batch" class="hidden glass-card p-6 rounded-2xl border border-gold-600/30 space-y-6">
+            <div class="border-b border-navy-700 pb-3 flex justify-between items-center">
+                <div>
+                    <h2 class="text-lg font-black text-gold-400 flex items-center gap-2">
+                        <i class="fa-solid fa-layer-group text-sky-400"></i> <span>الحجز والطلب المتعدد لعدة خدام</span>
+                    </h2>
+                    <p class="text-xs text-slate-300">أدخل أسماء مجموعة من الخدام ليتم حجزهم فوراً وتوليد ملف PDF مجمع لجميع الدعوات.</p>
+                </div>
+                <button onclick="addBatchRow()" class="bg-gold-500 hover:bg-gold-600 text-navy-900 font-black text-xs px-4 py-2 rounded-xl transition">
+                    + إضافة خادم آخر
+                </button>
+            </div>
+
+            <div id="batchRowsContainer" class="space-y-3">
+                <!-- Batch Rows Dynamic -->
+            </div>
+
+            <div class="flex justify-end gap-3 pt-4 border-t border-navy-700">
+                <button onclick="processBatchBooking()" class="bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-black text-sm px-6 py-3 rounded-xl shadow-lg hover:opacity-90 transition flex items-center gap-2">
+                    <i class="fa-solid fa-file-pdf text-lg"></i> <span>إصدار وتوليد ملف PDF مجمع</span>
+                </button>
+            </div>
+        </section>
+
+        <!-- TAB 3: SCANNER & ATTENDANCE -->
+        <section id="section-scan" class="hidden space-y-6">
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div class="glass-card p-4 rounded-xl border-r-4 border-gold-500">
+                    <p class="text-xs font-bold text-slate-400">إجمالي الحضور المسجل</p>
+                    <h3 id="statAttendedCount" class="text-2xl font-black text-emerald-400 mt-1">0</h3>
+                </div>
+                <div class="glass-card p-4 rounded-xl border-r-4 border-crimson-600">
+                    <p class="text-xs font-bold text-slate-400">فائزو الحضور المبكر (من 40)</p>
+                    <h3 id="statEarlyCount" class="text-2xl font-black text-gold-400 mt-1">0 / 40</h3>
+                </div>
+                <div class="glass-card p-4 rounded-xl border-r-4 border-sky-500">
+                    <p class="text-xs font-bold text-slate-400">الفعالية النشطة حالياً</p>
+                    <h3 id="statActiveEventName" class="text-base font-black text-sky-300 mt-1">اليوم الروحي للخدام</h3>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                <div class="lg:col-span-5 glass-card p-6 rounded-2xl border border-gold-600/30 space-y-4">
+                    <h3 class="text-base font-bold text-gold-400 border-b border-navy-700 pb-2">كاميرا مسح الـ QR عند البوابة</h3>
+                    <div id="reader" class="bg-navy-900 rounded-xl overflow-hidden border border-navy-700"></div>
+                    <form onsubmit="handleManualCheckin(event)" class="flex gap-2">
+                        <input type="text" id="manualCodeInput" placeholder="أدخل الكود يدويًا (SERV-1001)" class="flex-1 bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                        <button type="submit" class="bg-gold-500 text-navy-900 font-bold text-xs px-4 py-2 rounded-xl">تسجيل</button>
+                    </form>
+                    <div id="scanResultBox" class="hidden p-3 rounded-xl text-xs font-bold"></div>
+                </div>
+
+                <div class="lg:col-span-7 glass-card p-6 rounded-2xl border border-gold-600/30 flex flex-col justify-between">
+                    <div>
+                        <div class="flex justify-between items-center border-b border-navy-700 pb-3 mb-3">
+                            <h3 class="text-base font-bold text-gold-400">سجل الحضور الحي للفعالية</h3>
+                            <button onclick="exportAttendanceCSV()" class="text-xs bg-navy-900 text-emerald-400 border border-emerald-500/30 px-3 py-1.5 rounded-lg">
+                                <i class="fa-solid fa-file-excel"></i> تصدير Excel CSV
+                            </button>
+                        </div>
+                        <div class="overflow-x-auto max-h-80">
+                            <table class="w-full text-right text-xs">
+                                <thead class="bg-navy-900 text-gold-400 font-bold">
+                                    <tr><th class="p-2">#</th><th class="p-2">الاسم</th><th class="p-2">الخدمة</th><th class="p-2">وقت الوصول</th><th class="p-2">الحالة</th></tr>
+                                </thead>
+                                <tbody id="attendanceTableBody" class="divide-y divide-navy-700"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ADMIN BOOKINGS: registered names and counts per event -->
+        <section id="section-bookings" class="hidden space-y-6">
+            <div class="glass-card p-6 rounded-2xl border border-gold-600/30">
+                <div class="flex flex-wrap justify-between items-center gap-3 border-b border-navy-700 pb-4 mb-4">
+                    <div><h2 class="text-lg font-black text-gold-300">الحجوزات وأسماء المسجلين</h2><p class="text-xs text-slate-400 mt-1">اختر الفعالية لمراجعة عدد الحجوزات وأسماء أصحابها.</p></div>
+                    <div id="bookingsToolbar" class="hidden flex flex-wrap items-center gap-2">
+                        <select id="bookingsEventFilter" onchange="renderAdminBookings()" class="bg-navy-900 border border-gold-500/40 text-white text-xs rounded-xl px-3 py-2"></select>
+                        <button onclick="exportBookingsCSV()" class="bg-emerald-900/60 border border-emerald-500/40 text-emerald-200 text-xs font-bold px-3 py-2 rounded-xl"><i class="fa-solid fa-file-csv"></i> تصدير CSV</button>
+                    </div>
+                </div>
+                <p id="bookingsLoginHint" class="hidden rounded-xl bg-slate-900 p-4 text-sm text-slate-300">سجّل دخول الأدمن لعرض بيانات الحاجزين.</p>
+                <div id="eventBookingSummary" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-5"></div>
+                <div class="rounded-xl border border-gold-500/20 bg-navy-900/60 p-4 mb-4">
+                    <p class="text-xs text-slate-400">إجمالي حجوزات <strong id="bookingsEventName" class="text-gold-200"></strong></p>
+                    <p id="bookingsCount" class="text-3xl font-black text-gold-300 mt-1">0</p>
+                </div>
+                <div class="overflow-x-auto rounded-xl border border-slate-800">
+                    <table class="w-full min-w-[850px] text-right text-xs">
+                        <thead class="bg-navy-900 text-gold-300"><tr><th class="p-3">#</th><th class="p-3">الاسم</th><th class="p-3">الخدمة</th><th class="p-3">الموبايل</th><th class="p-3">كود الدعوة</th><th class="p-3">تاريخ الحجز</th><th class="p-3">الحضور</th></tr></thead>
+                        <tbody id="bookingsTableBody" class="divide-y divide-slate-800"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 4: EVENT MANAGEMENT & LOGOS -->
+        <section id="section-events" class="hidden space-y-6">
+            <div class="glass-card p-6 rounded-2xl border border-gold-600/30 space-y-4">
+                <h2 class="text-lg font-black text-gold-400 border-b border-navy-700 pb-3 flex justify-between items-center">
+                    <span>إدارة الفعاليات والشعارات</span>
+                    <button onclick="exportFullEventReportPDF()" class="bg-crimson-600 hover:bg-crimson-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition">
+                        <i class="fa-solid fa-file-pdf"></i> تحميل تقرير الفعالية الشامل PDF
+                    </button>
+                </h2>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-navy-900/60 p-4 rounded-xl border border-navy-700">
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-1">رفع/تغيير لوجو الكنيسة الأساسي:</label>
+                        <input type="file" accept="image/*" onchange="handleLogoUpload(event, 'church')" class="text-xs text-slate-300">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-300 mb-1">رفع/تغيير لوجو الفعالية / اليوم:</label>
+                        <input type="file" accept="image/*" onchange="handleLogoUpload(event, 'event')" class="text-xs text-slate-300">
+                    </div>
+                </div>
+
+                <form onsubmit="addNewEvent(event)" class="space-y-3 pt-2">
+                    <h3 class="text-xs font-bold text-gold-400">إنشاء فعالية جديدة:</h3>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <input type="text" id="newEventTitle" required placeholder="عنوان الفعالية / اليوم الروحي" class="bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                        <input type="text" id="newEventVerse" placeholder="الآية الكنسية للفعالية" class="bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                        <input type="date" id="newEventDate" required class="bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                        <input type="text" id="newEventTime" placeholder="موعد الفعالية / القداس (7:00 ص)" class="bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                    </div>
+                    <div class="bg-navy-900/70 border border-navy-700 rounded-xl p-3">
+                        <label class="block text-xs font-bold text-gold-400 mb-2">الثيمات المتاحة لهذه الفعالية (اختيار الأدمن):</label>
+                        <div id="newEventThemes" class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs"></div>
+                    </div>
+                    <button type="submit" class="bg-gold-500 text-navy-900 font-bold text-xs px-4 py-2 rounded-xl">+ إضافة الفعالية</button>
+                </form>
+
+                <div class="pt-4 border-t border-navy-700">
+                    <h3 class="text-xs font-bold text-slate-300 mb-2">قائمة الفعاليات المتاحة:</h3>
+                    <div id="eventsList" class="space-y-2"></div>
+                </div>
+            </div>
+        </section>
+
+        <!-- TAB 5: ADMIN MANAGEMENT & PROFILE -->
+        <section id="section-admins" class="hidden glass-card p-6 rounded-2xl border border-gold-600/30 space-y-6">
+            <div class="border-b border-navy-700 pb-3">
+                <h2 class="text-lg font-black text-gold-400">إدارة المشرفين وإعدادات الأمان</h2>
+                <p class="text-xs text-slate-300">تغيير اسم المستخدم وكلمة السر الخاصة بك أو إضافة أدمن جديد المنظومة.</p>
+            </div>
+
+            <!-- Profile Update Section -->
+            <form onsubmit="updateCurrentAdminProfile(event)" class="bg-navy-900/80 p-4 rounded-xl border border-gold-500/30 space-y-3 max-w-md">
+                <h3 class="text-xs font-bold text-gold-400"><i class="fa-solid fa-user-gear"></i> تعديل بيانات حسابك الحالي:</h3>
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">اسم المستخدم الجديد:</label>
+                    <input type="text" id="currentAdminNewUsername" required class="w-full bg-navy-800 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                </div>
+                <div>
+                    <label class="block text-[11px] text-slate-300 mb-1">كلمة السر الجديدة:</label>
+                    <input type="password" id="currentAdminNewPassword" required class="w-full bg-navy-800 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                </div>
+                <button type="submit" class="bg-gold-500 text-navy-900 font-black text-xs px-4 py-2 rounded-xl">تحديث بياناتي الآن</button>
+            </form>
+
+            <!-- Add New Admin -->
+            <form onsubmit="addNewAdmin(event)" class="space-y-3 max-w-md pt-2">
+                <h3 class="text-xs font-bold text-slate-200">+ إضافة مشرف (أدمن) جديد:</h3>
+                <input type="text" id="newAdminUsername" required placeholder="اسم المستخدم للأدمن الجديد" class="w-full bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                <input type="password" id="newAdminPassword" required placeholder="كلمة السر" class="w-full bg-navy-900 border border-navy-700 text-white text-xs rounded-xl px-3 py-2">
+                <button type="submit" class="bg-navy-700 text-gold-400 border border-gold-500/40 text-xs font-bold px-4 py-2 rounded-xl">إضافة الأدمن</button>
+            </form>
+
+            <div class="pt-4 border-t border-navy-700">
+                <h4 class="text-xs font-bold text-slate-300 mb-2">قائمة الأدمنز الحاليين:</h4>
+                <div id="adminsList" class="space-y-1.5 max-w-md"></div>
+            </div>
+        </section>
+
+    </main>
+
+    <div id="pdf-export-overlay" class="hidden" aria-live="polite"><div class="rounded-2xl border border-gold-500/30 bg-slate-950/95 px-8 py-6 text-center shadow-2xl"><i class="fa-solid fa-spinner fa-spin text-3xl text-gold-400"></i><p id="pdf-export-message" class="mt-3 text-sm font-bold">جاري تجهيز الدعوات للطباعة…</p></div></div>
+
+    <!-- HIDDEN RENDER CONTAINER FOR SINGLE TICKET PDF -->
+    <div id="pdf-render-wrapper">
+        <div id="pdfTemplateCard" class="theme-navy-gold rounded-2xl invitation-card">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid rgba(212,175,55,0.4); padding-bottom: 15px; margin-bottom: 15px;">
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <img id="pdfChurchLogo" src="" style="width: 70px; height: 70px; border-radius: 50%; border: 2px solid #D4AF37; object-fit: cover;">
+                    <img id="pdfEventLogo" src="" style="width: 70px; height: 70px; border-radius: 50%; border: 2px solid #FFE066; object-fit: cover;">
+                </div>
+                <div style="text-align: left;">
+                    <span style="background-color: #D4AF37; color: #0B132B; font-weight: 900; font-size: 12px; padding: 4px 12px; border-radius: 6px;">دعوة رسمية VIP Pass</span>
+                </div>
+            </div>
+
+            <div style="text-align: center; margin: 15px 0;">
+                <h3 id="pdfChurchName" style="font-size: 16px; font-weight: bold; margin: 0;">كنيسة الأنبا شنودة رئيس المتوحدين</h3>
+                <h1 id="pdfEventTitle" style="font-size: 28px; font-weight: 900; color: #FFE066; margin: 8px 0; text-decoration: underline;">اليوم الروحي للخدام</h1>
+            </div>
+
+            <div style="background-color: rgba(0,0,0,0.3); border-radius: 16px; padding: 20px; border: 1px solid rgba(212,175,55,0.3); margin: 20px 0; display: flex; justify-content: space-between; align-items: center;">
+                <div>
+                    <p style="font-size: 12px; margin: 0; opacity: 0.8;">اسم الخادم / المشارك:</p>
+                    <h2 id="pdfServantName" style="font-size: 24px; font-weight: 900; color: #FFE066; margin: 5px 0;">اسم الخادم</h2>
+                    <p id="pdfServantStage" style="font-size: 14px; font-weight: bold; margin: 0;">الخدمة</p>
+                    <p style="font-size: 12px; font-family: monospace; margin-top: 10px;">كود الدعوة: <span id="pdfTicketCode" style="font-weight: 900; color: #FFE066;">#SERV-1000</span></p>
+                </div>
+
+                <div style="background: #ffffff; padding: 10px; border-radius: 12px; border: 2px solid #D4AF37;">
+                    <div id="pdfQrcode" style="width: 110px; height: 110px;"></div>
+                </div>
+            </div>
+
+            <div style="text-align: center; background-color: rgba(0,0,0,0.2); border-radius: 12px; padding: 12px; margin: 15px 0;">
+                <p id="pdfBibleVerse" style="font-size: 14px; font-style: italic; margin: 0; font-weight: 600;">"تَعَالَوْا أَنْتُمْ مُنْفَرِدِينَ إِلَى مَوْضِعٍ خَلاَءٍ وَاسْتَرِيحُوا قَلِيلاً"</p>
+            </div>
+
+            <div id="pdfRewardBox" style="background-color: #E63946; color: #ffffff; border-radius: 12px; padding: 12px; font-size: 12px;">
+                <p style="font-weight: 900; color: #FFE066; margin: 0 0 4px 0;">🎁 مفاجأة الحضور المبكر:</p>
+                <p id="pdfRewardText" style="margin: 0;">هدية فورية واستلام متميز لأول 40 خادم يصلون قبل الموعد.</p>
+            </div>
+
+            <div style="margin-top: 25px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2); display: flex; justify-content: space-between; font-size: 12px;">
+                <span id="pdfEventDate">📅 السبت 14 / 11 / 2026</span>
+                <span id="pdfEventTime">⏰ القداس: 7:00 صباحاً</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Render targets remain in the page so html2canvas can capture them reliably. -->
+    <div id="bulk-pdf-render-wrapper"></div>
+    <div id="report-pdf-render-wrapper"></div>
+
+    <script src="/app.js?v=3" defer></script>
+
+</body>
+</html>
